@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from rest_framework import serializers
 from .models import Author, Book, Member, Loan
 from django.contrib.auth.models import User
@@ -44,4 +46,24 @@ class LoanSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Loan
-        fields = ['id', 'book', 'book_id', 'member', 'member_id', 'loan_date', 'return_date', 'is_returned']
+        fields = ['id', 'book', 'book_id', 'member', 'member_id', 'loan_date', 'return_date', 'is_returned', 'due_date']
+
+
+class ExtendLoanSerializer(serializers.Serializer):
+    additional_days = serializers.IntegerField()
+
+    def create(self, validated_data):
+        loan = self.context.get('loan')
+        loan.due_date = loan.due_date + timedelta(days=validated_data.get('additional_days'))
+        loan.save()
+        return validated_data
+
+
+class MemberActivitySerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username')
+    email = serializers.CharField(source='user.email')
+    active_loans = serializers.IntegerField()
+
+    class Meta:
+        model = Member
+        fields = ('id', 'username', 'email', 'active_loans')

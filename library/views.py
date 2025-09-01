@@ -1,7 +1,9 @@
-from rest_framework import viewsets, status
+from django.db.models import Count, Q
+from rest_framework import viewsets, status, pagination, generics
 from rest_framework.response import Response
 from .models import Author, Book, Member, Loan
-from .serializers import AuthorSerializer, BookSerializer, MemberSerializer, LoanSerializer
+from .serializers import AuthorSerializer, BookSerializer, MemberSerializer, LoanSerializer, ExtendLoanSerializer, \
+    MemberActivitySerializer
 from rest_framework.decorators import action
 from django.utils import timezone
 from .tasks import send_loan_notification
@@ -11,7 +13,7 @@ class AuthorViewSet(viewsets.ModelViewSet):
     serializer_class = AuthorSerializer
 
 class BookViewSet(viewsets.ModelViewSet):
-    queryset = Book.objects.all()
+    queryset = Book.objects.all().select_related('author')
     serializer_class = BookSerializer
 
     @action(detail=True, methods=['post'])
@@ -35,7 +37,7 @@ class BookViewSet(viewsets.ModelViewSet):
         book = self.get_object()
         member_id = request.data.get('member_id')
         try:
-            loan = Loan.objects.get(book=book, member__id=member_id, is_returned=False)
+            loan = Loan.objects.get(book=book, member_id=member_id, is_returned=False)
         except Loan.DoesNotExist:
             return Response({'error': 'Active loan does not exist.'}, status=status.HTTP_400_BAD_REQUEST)
         loan.is_returned = True
@@ -50,5 +52,35 @@ class MemberViewSet(viewsets.ModelViewSet):
     serializer_class = MemberSerializer
 
 class LoanViewSet(viewsets.ModelViewSet):
-    queryset = Loan.objects.all()
+    queryset = Loan.objects.all().select_related('book', 'member', 'member__user')
     serializer_class = LoanSerializer
+
+    def get_serializer_class(self):
+        if self.action == 'extend_due_date':
+            return ExtendLoanSerializer
+        else:
+            return self.serializer_class
+
+    @action(detail=True, methods=['post'])
+    def extend_due_date(self, request, *args, **kwargs):
+        context = super().get_serializer_context()
+        loan = self.get_object()
+        if loan.due_date < timezone.now().date():
+            return Response({'error': 'Due date already passed'}, status=status.HTTP_400_BAD_REQUEST)
+        context['loan'] = loan
+        serialized = self.get_serializer_class()(data=request.data, context=context)
+        serialized.is_valid(raise_exception=True)
+        serialized.save()
+
+        loan_serialized = self.serializer_class(loan)
+        return Response(loan_serialized.data)
+
+
+class ActivityReportView(generics.GenericAPIView):
+    serializer_class = MemberActivitySerializer
+    def get(self, request, *args, **kwargs):
+        loans = Member.objects.all().annotate(
+            active_loans=Count('loans', filter=Q(loans__is_returned=False))
+        ).order_by('-active_loans').select_related('user', )[:5]
+        serialzied = self.get_serializer_class()(loans, many=True)
+        return Response(serialzied.data)
